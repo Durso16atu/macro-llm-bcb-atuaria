@@ -1,6 +1,7 @@
 /**
  * app.js: Motor de Inferência ONNX WebAssembly 100% Client-Side para a Macro LLM.
  * Executa a rede neural autoregressiva de 12,3M de parâmetros diretamente no navegador.
+ * Refinamento Etapa 4: Correção de fronteira BPE, amostragem Top-K/Top-P e terminal unificado.
  */
 
 // Estado da Aplicação
@@ -70,13 +71,18 @@ function initDomReferences() {
     valTemp: document.getElementById('valTemp'),
     sliderPenalty: document.getElementById('sliderPenalty'),
     valPenalty: document.getElementById('valPenalty'),
+    sliderTopP: document.getElementById('sliderTopP'),
+    valTopP: document.getElementById('valTopP'),
+    sliderTopK: document.getElementById('sliderTopK'),
+    valTopK: document.getElementById('valTopK'),
 
-    // Saída e Streaming
+    // Saída Unificada e Streaming
     outputCard: document.getElementById('outputCard'),
-    outputPrefixCard: document.getElementById('outputPrefixCard'),
+    placeholderText: document.getElementById('placeholderText'),
     outputPrefix: document.getElementById('outputPrefix'),
     outputStreaming: document.getElementById('outputStreaming'),
     streamingCursor: document.getElementById('streamingCursor'),
+    btnCopiar: document.getElementById('btnCopiar'),
 
     // Métricas
     metricsContainer: document.getElementById('metricsContainer'),
@@ -108,22 +114,48 @@ function setupEventListeners() {
   }
 
   // Sliders com feedback numérico em tempo real
-  dom.sliderTokens.addEventListener('input', (e) => {
-    dom.valTokens.textContent = e.target.value;
-  });
-  dom.sliderTemp.addEventListener('input', (e) => {
-    dom.valTemp.textContent = parseFloat(e.target.value).toFixed(2);
-  });
-  dom.sliderPenalty.addEventListener('input', (e) => {
-    dom.valPenalty.textContent = parseFloat(e.target.value).toFixed(2);
-  });
+  if (dom.sliderTokens) {
+    dom.sliderTokens.addEventListener('input', (e) => {
+      dom.valTokens.textContent = e.target.value;
+    });
+  }
+  if (dom.sliderTemp) {
+    dom.sliderTemp.addEventListener('input', (e) => {
+      dom.valTemp.textContent = parseFloat(e.target.value).toFixed(2);
+    });
+  }
+  if (dom.sliderPenalty) {
+    dom.sliderPenalty.addEventListener('input', (e) => {
+      dom.valPenalty.textContent = parseFloat(e.target.value).toFixed(2);
+    });
+  }
+  if (dom.sliderTopP) {
+    dom.sliderTopP.addEventListener('input', (e) => {
+      dom.valTopP.textContent = parseFloat(e.target.value).toFixed(2);
+    });
+  }
+  if (dom.sliderTopK) {
+    dom.sliderTopK.addEventListener('input', (e) => {
+      dom.valTopK.textContent = e.target.value;
+    });
+  }
 
   // Alternador de Configurações
-  dom.toggleConfigBtn.addEventListener('click', () => {
-    dom.configPanel.classList.toggle('hidden');
-    const isExpanded = !dom.configPanel.classList.contains('hidden');
-    dom.toggleConfigBtn.querySelector('.chevron-icon').style.transform = isExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
-  });
+  if (dom.toggleConfigBtn) {
+    dom.toggleConfigBtn.addEventListener('click', () => {
+      dom.configPanel.classList.toggle('hidden');
+      const isExpanded = !dom.configPanel.classList.contains('hidden');
+      const icon = dom.toggleConfigBtn.querySelector('.chevron-icon');
+      if (icon) {
+        icon.style.transform = isExpanded ? 'rotate(180deg)' : 'rotate(0deg)';
+      }
+    });
+  }
+
+  // Botão Copiar Análise Unificada
+  if (dom.btnCopiar) {
+    dom.btnCopiar.addEventListener('click', copiarAnaliseCompleta);
+  }
 
   // Ações de Geração
   dom.btnGerar.addEventListener('click', iniciarGeracao);
@@ -212,7 +244,6 @@ async function fetchModelWithProgress(url, onProgress) {
     throw new Error(`Falha no download HTTP (${response.status} ${response.statusText})`);
   }
 
-  // Se o servidor fornecer Content-Length, usamos; caso contrário, estimamos 55.5 MB
   const contentLength = response.headers.get('content-length');
   const total = contentLength ? parseInt(contentLength, 10) : 55564853;
 
@@ -246,6 +277,57 @@ async function fetchModelWithProgress(url, onProgress) {
 }
 
 /**
+ * Sanitiza o primeiro token gerado para garantir continuidade limpa e sem espaços espúrios.
+ * @param {string} pedacoTexto - Texto bruto decodificado do 1º token gerado.
+ * @param {string} prefixo - Prefixo condicional anterior.
+ * @returns {string} Token com espaçamento calibrado.
+ */
+function sanitizarPrimeiroToken(pedacoTexto, prefixo) {
+  if (!pedacoTexto) return '';
+
+  // Remove caracteres \u00a0 e quebras de linha espúrias
+  let tokenLimpo = pedacoTexto.replace(/\u00a0/g, ' ').replace(/[\r\n]+/g, ' ');
+
+  // Remove espaços repetidos e espaços iniciais brutos
+  tokenLimpo = tokenLimpo.replace(/^[ \t]+/, '');
+  if (tokenLimpo.length === 0) return '';
+
+  const prefixoTrim = prefixo ? prefixo.trimEnd() : '';
+  const ultimoChar = prefixoTrim.length > 0 ? prefixoTrim[prefixoTrim.length - 1] : '';
+
+  const ehPontuacao = /^[.,;:!?]/.test(tokenLimpo);
+
+  if (ehPontuacao) {
+    // Se o token gerado for pontuação, anexa colado sem espaço
+    return tokenLimpo;
+  } else {
+    // Se for palavra alfanumérica e o prefixo não termina com espaço ou parênteses aberto
+    if (ultimoChar && !/\s|[(\[{]/.test(ultimoChar)) {
+      return ' ' + tokenLimpo;
+    }
+    return tokenLimpo;
+  }
+}
+
+/**
+ * Pós-processamento semântico contra truncamento abrupto no meio de orações.
+ * Retrocede o texto gerado até a última pontuação forte (. ! ?).
+ * @param {string} textoContinuacao - Texto gerado acumulado.
+ * @returns {string} Texto ajustado com terminação gramatical legítima.
+ */
+function truncarSemanticamente(textoContinuacao) {
+  if (!textoContinuacao) return '';
+  // Expressão regular que captura até a última pontuação forte final legítima
+  const regex = /([\s\S]*[.!?]["')\]]?)/;
+  const match = textoContinuacao.match(regex);
+  if (match && match[1].trim().length > 0) {
+    return match[1].trimEnd();
+  }
+  // Se não houver pontuação intermediária, mantém o texto gerado
+  return textoContinuacao.trimEnd();
+}
+
+/**
  * Inicia o loop autorregressivo de geração de texto em streaming.
  */
 async function iniciarGeracao() {
@@ -258,20 +340,17 @@ async function iniciarGeracao() {
     return;
   }
 
-  const modoLivre = dom.toggleModoLivre.checked;
-  const maxTokens = parseInt(dom.sliderTokens.value, 10) || 80;
-  const temperature = parseFloat(dom.sliderTemp.value) || 0.6;
-  const repetitionPenalty = parseFloat(dom.sliderPenalty.value) || 1.15;
+  const modoLivre = dom.toggleModoLivre ? dom.toggleModoLivre.checked : false;
+  const maxTokens = parseInt(dom.sliderTokens?.value, 10) || 80;
+  const temperature = parseFloat(dom.sliderTemp?.value) || 0.65;
+  const repetitionPenalty = parseFloat(dom.sliderPenalty?.value) || 1.18;
+  const topP = parseFloat(dom.sliderTopP?.value) || 0.88;
+  const topK = parseInt(dom.sliderTopK?.value, 10) || 40;
 
   // Aplicação do Prompt Wrapper ou Modo Livre
   let prefixoFinal = textoEntrada;
   if (!modoLivre && typeof converterPerguntaParaPrefixo === 'function') {
     prefixoFinal = converterPerguntaParaPrefixo(textoEntrada);
-    dom.outputPrefixCard.classList.remove('hidden');
-    dom.outputPrefix.textContent = prefixoFinal;
-  } else {
-    dom.outputPrefixCard.classList.add('hidden');
-    dom.outputPrefix.textContent = '';
   }
 
   // Preparação de Estado de Geração
@@ -280,6 +359,10 @@ async function iniciarGeracao() {
 
   dom.btnGerar.classList.add('hidden');
   dom.btnParar.classList.remove('hidden');
+
+  // Terminal Unificado: renderiza o prefixo em destaque atenuado e limpa a saída de continuação
+  if (dom.placeholderText) dom.placeholderText.classList.add('hidden');
+  dom.outputPrefix.textContent = modoLivre ? '' : prefixoFinal;
   dom.outputStreaming.textContent = '';
   dom.streamingCursor.classList.remove('hidden');
   dom.metricsContainer.classList.remove('hidden');
@@ -288,6 +371,8 @@ async function iniciarGeracao() {
 
   const inicioTempo = performance.now();
   let tokensGeradosCount = 0;
+  let parouPorEarlyStop = false;
+  let textoGeradoAcumulado = '';
 
   try {
     // Tokeniza o prefixo
@@ -298,6 +383,7 @@ async function iniciarGeracao() {
 
     const blockSize = 256;
     let tokensHistorico = [...tokenIds];
+    const minTokensSeguranca = 35; // Patamar mínimo antes do Early Stop
 
     for (let step = 0; step < maxTokens; step++) {
       if (state.abortController.signal.aborted) {
@@ -322,9 +408,10 @@ async function iniciarGeracao() {
       const logitsData = resultado.logits.data; // Float32Array(4096)
       const logits = new Float32Array(logitsData);
 
-      // 1. Penalidade de Repetição (sobre o histórico gerado)
-      const uniqueHistorico = new Set(tokensHistorico);
-      for (const tId of uniqueHistorico) {
+      // 1. Penalidade de Repetição em janela móvel de 64 tokens recentes
+      const janelaRecente = tokensHistorico.slice(-64);
+      const uniqueRecente = new Set(janelaRecente);
+      for (const tId of uniqueRecente) {
         if (tId >= 0 && tId < logits.length) {
           if (logits[tId] > 0) {
             logits[tId] /= repetitionPenalty;
@@ -340,18 +427,25 @@ async function iniciarGeracao() {
         logits[i] /= tempEfetiva;
       }
 
-      // 3. Amostragem Top-K (k=25) Ponderada por Softmax
-      const nextTokenId = sampleTopK(logits, 25);
+      // 3. Amostragem Calibrada: Top-K (40) combinada com Top-P (0.88)
+      const nextTokenId = sampleTopKTopP(logits, topK, topP);
 
       // Adiciona o novo token ao histórico
       tokensHistorico.push(nextTokenId);
       tokensGeradosCount++;
 
-      // Decodifica o token gerado e atualiza a interface em streaming
-      const pedacoTexto = state.tokenizer.decode([nextTokenId]);
-      dom.outputStreaming.textContent += pedacoTexto;
+      // Decodifica o token gerado
+      let pedacoTexto = state.tokenizer.decode([nextTokenId]);
 
-      // Métricas de velocidade
+      // Correção de Fronteira no 1º Token (step === 0)
+      if (step === 0) {
+        pedacoTexto = sanitizarPrimeiroToken(pedacoTexto, prefixoFinal);
+      }
+
+      textoGeradoAcumulado += pedacoTexto;
+      dom.outputStreaming.textContent = textoGeradoAcumulado;
+
+      // Métricas de velocidade em tempo real
       const agora = performance.now();
       const segundosDecorridos = (agora - inicioTempo) / 1000;
       const velocidade = segundosDecorridos > 0 ? (tokensGeradosCount / segundosDecorridos).toFixed(1) : '0.0';
@@ -360,8 +454,25 @@ async function iniciarGeracao() {
       dom.metricSpeed.textContent = `${velocidade} t/s`;
       dom.metricTime.textContent = `${segundosDecorridos.toFixed(2)}s`;
 
-      // Pausa microscópica para o navegador pintar a tela (yield streaming)
+      // Critério de Parada Natural (Early Stop):
+      // Após o patamar mínimo (35 tokens), se encontrar pontuação forte (. ! ?), encerra a oração
+      if (tokensGeradosCount >= minTokensSeguranca && /[.!?]/.test(pedacoTexto)) {
+        console.log(`[Early Stop] Conclusão de período atingida no token ${tokensGeradosCount}.`);
+        parouPorEarlyStop = true;
+        break;
+      }
+
+      // Pausa microscópica para o navegador pintar o streaming
       await new Promise((r) => setTimeout(r, 0));
+    }
+
+    // Pós-Processamento Semântico: se atingiu maxTokens sem parar naturalmente por pontuação
+    if (!parouPorEarlyStop && !state.abortController?.signal?.aborted) {
+      const textoSemantico = truncarSemanticamente(textoGeradoAcumulado);
+      if (textoSemantico && textoSemantico !== textoGeradoAcumulado) {
+        dom.outputStreaming.textContent = textoSemantico;
+        console.log('[Pós-Processamento] Truncamento semântico aplicado na última oração completa.');
+      }
     }
   } catch (err) {
     console.error('[Erro na geração]', err);
@@ -402,38 +513,100 @@ function finalizarGeracao(inicioTempo, totalTokens) {
 }
 
 /**
- * Amostragem Multinomial com filtro Top-K.
+ * Amostragem Combinada: Top-K filtrada por Top-P (Nucleus Sampling).
  * @param {Float32Array} logits - Logits de saída (4096 valores).
- * @param {number} topK - Número de maiores candidatos a considerar.
+ * @param {number} topK - Limite máximo de candidatos (default 40).
+ * @param {number} topP - Massa de probabilidade acumulada (default 0.88).
  * @returns {number} ID do token sorteado.
  */
-function sampleTopK(logits, topK = 25) {
+function sampleTopKTopP(logits, topK = 40, topP = 0.88) {
   const n = logits.length;
   const indices = new Int32Array(n);
   for (let i = 0; i < n; i++) indices[i] = i;
 
-  // Ordena os índices em ordem decrescente de valor de logit
+  // Ordena os índices em ordem decrescente de logit
   indices.sort((a, b) => logits[b] - logits[a]);
 
   const k = Math.min(topK, n);
   const maxVal = logits[indices[0]];
 
-  // Softmax numericamente estável para os k maiores
-  const probs = new Float32Array(k);
+  // 1. Softmax numericamente estável sobre os top-k candidatos
+  const expProbs = new Float32Array(k);
   let sumExp = 0;
   for (let i = 0; i < k; i++) {
     const p = Math.exp(logits[indices[i]] - maxVal);
-    probs[i] = p;
+    expProbs[i] = p;
     sumExp += p;
   }
 
-  // Sorteio multinomial cumulativo
-  let r = Math.random() * sumExp;
   for (let i = 0; i < k; i++) {
-    r -= probs[i];
+    expProbs[i] /= sumExp;
+  }
+
+  // 2. Corte por Top-P (Nucleus)
+  let cumProb = 0;
+  let cutoffIndex = k;
+  for (let i = 0; i < k; i++) {
+    cumProb += expProbs[i];
+    if (cumProb >= topP) {
+      cutoffIndex = i + 1;
+      break;
+    }
+  }
+
+  // 3. Sorteio multinomial sobre o núcleo filtrado
+  let sumNucleus = 0;
+  for (let i = 0; i < cutoffIndex; i++) {
+    sumNucleus += expProbs[i];
+  }
+
+  let r = Math.random() * sumNucleus;
+  for (let i = 0; i < cutoffIndex; i++) {
+    r -= expProbs[i];
     if (r <= 0) return indices[i];
   }
   return indices[0];
+}
+
+/**
+ * Copia o texto consolidado (prefixo + continuação gerada) para a área de transferência.
+ */
+async function copiarAnaliseCompleta() {
+  const prefixo = dom.outputPrefix ? dom.outputPrefix.textContent : '';
+  const continuacao = dom.outputStreaming ? dom.outputStreaming.textContent : '';
+  const textoCompleto = (prefixo + continuacao).trim();
+
+  if (!textoCompleto) {
+    alert('Nenhum texto gerado para copiar.');
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(textoCompleto);
+    const spanOriginal = dom.btnCopiar.innerHTML;
+    dom.btnCopiar.innerHTML = `
+      <svg class="w-3.5 h-3.5 text-emerald-400 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"></path>
+      </svg>
+      <span class="text-emerald-400 font-semibold">Copiado! ✓</span>
+    `;
+    dom.btnCopiar.classList.add('border-emerald-500/50', 'bg-emerald-500/10');
+
+    setTimeout(() => {
+      dom.btnCopiar.innerHTML = spanOriginal;
+      dom.btnCopiar.classList.remove('border-emerald-500/50', 'bg-emerald-500/10');
+    }, 2000);
+  } catch (err) {
+    console.error('Falha ao copiar:', err);
+    // Fallback tradicional
+    const textarea = document.createElement('textarea');
+    textarea.value = textoCompleto;
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+    alert('Análise copiada com sucesso!');
+  }
 }
 
 /**

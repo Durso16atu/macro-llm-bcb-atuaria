@@ -220,9 +220,9 @@
         </button>
       </div>
 
-      <!-- Painel Retrátil de Configurações -->
+      <!-- Painel Retrátil de Configurações Calibradas -->
       <div id="configPanel" class="hidden border-t border-surface-border/70 pt-4 mt-2">
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 bg-surface-primary/70 p-3.5 rounded-xl border border-surface-border/50 text-xs">
+        <div class="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-3.5 bg-surface-primary/70 p-3.5 rounded-xl border border-surface-border/50 text-xs">
           
           <!-- Slider: Tamanho Máximo de Tokens -->
           <div class="space-y-1.5">
@@ -249,14 +249,14 @@
           <div class="space-y-1.5">
             <div class="flex justify-between font-medium">
               <span class="text-slate-300">Temperatura:</span>
-              <span id="valTemp" class="font-mono text-sky-400">0.60</span>
+              <span id="valTemp" class="font-mono text-sky-400">0.65</span>
             </div>
             <input
               type="range"
               id="sliderTemp"
-              min="0.2"
-              max="1.0"
-              value="0.6"
+              min="0.20"
+              max="1.00"
+              value="0.65"
               step="0.05"
               class="w-full h-1.5 bg-surface-card rounded-lg appearance-none cursor-pointer accent-sky-500"
             >
@@ -266,24 +266,66 @@
             </div>
           </div>
 
-          <!-- Slider: Penalidade de Repetição -->
+          <!-- Slider: Penalidade de Repetição (Janela 64) -->
           <div class="space-y-1.5">
             <div class="flex justify-between font-medium">
-              <span class="text-slate-300">Penalidade Repetição:</span>
-              <span id="valPenalty" class="font-mono text-sky-400">1.15</span>
+              <span class="text-slate-300">Repetição (Janela 64):</span>
+              <span id="valPenalty" class="font-mono text-sky-400">1.18</span>
             </div>
             <input
               type="range"
               id="sliderPenalty"
               min="1.00"
               max="1.50"
-              value="1.15"
-              step="0.05"
+              value="1.18"
+              step="0.02"
               class="w-full h-1.5 bg-surface-card rounded-lg appearance-none cursor-pointer accent-sky-500"
             >
             <div class="flex justify-between text-[10px] text-slate-500">
               <span>1.00 (Neutra)</span>
-              <span>1.50 (Forte)</span>
+              <span>1.50 (Severa)</span>
+            </div>
+          </div>
+
+          <!-- Slider: Top-P (Nucleus Sampling) -->
+          <div class="space-y-1.5">
+            <div class="flex justify-between font-medium">
+              <span class="text-slate-300">Top-P (Nucleus):</span>
+              <span id="valTopP" class="font-mono text-sky-400">0.88</span>
+            </div>
+            <input
+              type="range"
+              id="sliderTopP"
+              min="0.50"
+              max="1.00"
+              value="0.88"
+              step="0.02"
+              class="w-full h-1.5 bg-surface-card rounded-lg appearance-none cursor-pointer accent-sky-500"
+            >
+            <div class="flex justify-between text-[10px] text-slate-500">
+              <span>0.50 (Focado)</span>
+              <span>1.00 (Amplo)</span>
+            </div>
+          </div>
+
+          <!-- Slider: Top-K -->
+          <div class="space-y-1.5">
+            <div class="flex justify-between font-medium">
+              <span class="text-slate-300">Top-K:</span>
+              <span id="valTopK" class="font-mono text-sky-400">40</span>
+            </div>
+            <input
+              type="range"
+              id="sliderTopK"
+              min="10"
+              max="100"
+              value="40"
+              step="5"
+              class="w-full h-1.5 bg-surface-card rounded-lg appearance-none cursor-pointer accent-sky-500"
+            >
+            <div class="flex justify-between text-[10px] text-slate-500">
+              <span>10 tokens</span>
+              <span>100 tokens</span>
             </div>
           </div>
 
@@ -313,36 +355,42 @@
 
     </section>
 
-    <!-- Card Secundário: Prefixo Técnico Injetado (Prompt Wrapper) -->
-    <section id="outputPrefixCard" class="hidden bg-surface-card/60 rounded-xl border border-surface-border p-4 space-y-1 text-xs">
-      <div class="font-semibold uppercase tracking-wider text-amber-400/90 flex items-center gap-1.5">
-        <span>⚙️ Prefixo Técnico Condicionante (Prompt Wrapper):</span>
-      </div>
-      <p id="outputPrefix" class="text-slate-300 italic font-mono bg-surface-primary/50 p-2.5 rounded-lg border border-surface-border/50">
-        <!-- Preenchido via JS -->
-      </p>
-    </section>
-
-    <!-- Caixa de Saída com Efeito Streaming em Tempo Real -->
+    <!-- Terminal Unificado: Prefixo Condicionante + Continuação Gerada -->
     <section id="outputCard" class="bg-surface-card rounded-2xl border border-surface-border p-5 space-y-3 shadow-xl">
-      <div class="flex items-center justify-between border-b border-surface-border/80 pb-3">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-surface-border/80 pb-3">
+        
         <div class="flex items-center space-x-2">
           <span class="w-3 h-3 rounded-full bg-emerald-500 inline-block shadow-[0_0_8px_rgba(16,185,129,0.7)]"></span>
-          <h3 class="font-semibold text-sm text-slate-100">Texto Gerado pela Macro LLM (Streaming WebAssembly)</h3>
+          <h3 class="font-semibold text-sm text-slate-100">Análise Macroeconômica & Atuarial Consolidada</h3>
         </div>
 
-        <!-- Métricas em Tempo Real -->
-        <div id="metricsContainer" class="hidden flex items-center gap-3 text-xs font-mono text-slate-400">
-          <span id="metricTokens" class="px-2 py-0.5 rounded bg-surface-primary border border-surface-border">0 tokens</span>
-          <span id="metricSpeed" class="px-2 py-0.5 rounded bg-surface-primary border border-surface-border text-emerald-400">0.0 t/s</span>
-          <span id="metricTime" class="px-2 py-0.5 rounded bg-surface-primary border border-surface-border text-sky-400">0.00s</span>
+        <div class="flex items-center gap-3">
+          <!-- Métricas em Tempo Real -->
+          <div id="metricsContainer" class="hidden flex items-center gap-2 text-xs font-mono text-slate-400">
+            <span id="metricTokens" class="px-2 py-0.5 rounded bg-surface-primary border border-surface-border">0 tokens</span>
+            <span id="metricSpeed" class="px-2 py-0.5 rounded bg-surface-primary border border-surface-border text-emerald-400">0.0 t/s</span>
+            <span id="metricTime" class="px-2 py-0.5 rounded bg-surface-primary border border-surface-border text-sky-400">0.00s</span>
+          </div>
+
+          <!-- Botão Copiar Análise Completa -->
+          <button
+            type="button"
+            id="btnCopiar"
+            class="px-3 py-1.5 text-xs rounded-xl bg-surface-primary hover:bg-surface-border text-slate-300 hover:text-white border border-surface-border transition-all flex items-center gap-1.5 font-medium shadow-sm"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+            </svg>
+            <span>Copiar Análise</span>
+          </button>
         </div>
+
       </div>
 
-      <!-- Área de Texto com Cursor -->
-      <div class="bg-surface-primary p-4 rounded-xl border border-surface-border min-h-[140px] text-sm text-slate-100 leading-relaxed font-sans whitespace-pre-wrap selection:bg-sky-500/40">
-        <span id="outputStreaming" class="text-sky-100">Aguardando solicitação para gerar análise macroeconômica e atuarial...</span>
-        <span id="streamingCursor" class="cursor-blink hidden"></span>
+      <!-- Bloco de Texto Unificado e Fluido -->
+      <div id="outputContainer" class="bg-surface-primary p-4 sm:p-5 rounded-xl border border-surface-border min-h-[160px] text-sm leading-relaxed font-sans whitespace-pre-wrap selection:bg-sky-500/40">
+        <span id="placeholderText" class="text-slate-500 italic">Aguardando solicitação para gerar análise macroeconômica e atuarial...</span>
+        <span id="outputPrefix" class="text-slate-400 italic font-normal"></span><span id="outputStreaming" class="text-slate-100 font-medium"></span><span id="streamingCursor" class="cursor-blink hidden"></span>
       </div>
     </section>
 
