@@ -37,6 +37,13 @@
 
   <!-- ONNX Runtime WebAssembly Oficial -->
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+  <script>
+    // Configuração Estrita de Ambiente WASM (Single-Thread / Sem Proxy Workers)
+    if (typeof ort !== 'undefined' && ort.env && ort.env.wasm) {
+      ort.env.wasm.numThreads = 1;
+      ort.env.wasm.proxy = false;
+    }
+  </script>
 
   <!-- Módulos da Macro LLM -->
   <script src="tokenizer.js"></script>
@@ -125,6 +132,15 @@
 
   <!-- Conteúdo Central -->
   <main class="max-w-5xl mx-auto px-4 py-6 flex-1 w-full space-y-6">
+
+    <!-- Alerta de Erro Visual Gracioso -->
+    <div id="errorAlert" class="hidden bg-rose-500/10 border border-rose-500/30 rounded-xl p-4 text-xs text-rose-300 flex items-start gap-3 shadow-lg">
+      <span class="text-base">⚠️</span>
+      <div>
+        <p class="font-semibold text-rose-200">Aviso do Sistema WebAssembly</p>
+        <p id="errorMessage" class="mt-0.5 text-rose-300/90"></p>
+      </div>
+    </div>
 
     <!-- Hero / Badges Informativos -->
     <section class="text-center sm:text-left space-y-2">

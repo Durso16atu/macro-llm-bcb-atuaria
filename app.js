@@ -1,8 +1,19 @@
 /**
  * app.js: Motor de Inferência ONNX WebAssembly 100% Client-Side para a Macro LLM.
  * Executa a rede neural autoregressiva de 12,3M de parâmetros diretamente no navegador.
- * Refinamento Etapa 4: Correção de fronteira BPE, amostragem Top-K/Top-P e terminal unificado.
+ * 
+ * Estabilização de Memória & Prevenção de Crash 61696 (Out-of-Memory / Threading):
+ * 1. Força estritamente ort.env.wasm.numThreads = 1 e proxy = false (sem SharedArrayBuffer/COOP).
+ * 2. Libera buffers intermediários (chunks = null, modelBuffer = null) após carregar o binário.
+ * 3. Garante descarte de tensores e ciclos de Garbage Collection a cada token gerado.
  */
+
+// 1. Configuração Estrita de Ambiente WASM (Single-Thread / Sem Proxy Workers)
+// Impede o erro fatal 61696 e crashes por falta de SharedArrayBuffer / COOP no GitHub Pages
+if (typeof ort !== 'undefined' && ort.env && ort.env.wasm) {
+  ort.env.wasm.numThreads = 1;
+  ort.env.wasm.proxy = false;
+}
 
 // Estado da Aplicação
 const state = {
@@ -41,6 +52,12 @@ const ATALHOS_TEMATICOS = {
 let dom = {};
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Reafirma a configuração estrita do WASM no carregamento do DOM
+  if (typeof ort !== 'undefined' && ort.env && ort.env.wasm) {
+    ort.env.wasm.numThreads = 1;
+    ort.env.wasm.proxy = false;
+  }
+
   initDomReferences();
   setupEventListeners();
   initModelAndTokenizer();
@@ -55,6 +72,10 @@ function initDomReferences() {
     progressBar: document.getElementById('progressBar'),
     progressPercent: document.getElementById('progressPercent'),
     progressDetails: document.getElementById('progressDetails'),
+
+    // Alerta de Erro Visual
+    errorAlert: document.getElementById('errorAlert'),
+    errorMessage: document.getElementById('errorMessage'),
 
     // Inputs e Controles
     inputPrompt: document.getElementById('inputPrompt'),
@@ -178,11 +199,29 @@ function carregarAtalho(chave) {
 }
 
 /**
+ * Exibe um alerta de erro amigável na tela.
+ */
+function exibirAlertaErro(mensagem) {
+  if (dom.errorAlert && dom.errorMessage) {
+    dom.errorMessage.textContent = mensagem;
+    dom.errorAlert.classList.remove('hidden');
+  }
+}
+
+function ocultarAlertaErro() {
+  if (dom.errorAlert) {
+    dom.errorAlert.classList.add('hidden');
+  }
+}
+
+/**
  * Inicializa o modelo ONNX (com streaming de download e progresso) e o tokenizador.
+ * Libera explicitamente todos os buffers intermediários para evitar OOM no V8.
  */
 async function initModelAndTokenizer() {
   if (state.isModelReady || state.isModelLoading) return;
   state.isModelLoading = true;
+  ocultarAlertaErro();
 
   atualizarStatus('Carregando Tokenizador...', 'loading');
   dom.progressContainer.classList.remove('hidden');
@@ -193,15 +232,16 @@ async function initModelAndTokenizer() {
     state.tokenizer = await ByteLevelBPETokenizer.fromUrl(state.vocabUrl, state.mergesUrl);
     console.log('[Tokenizador] Pronto com 4096 tokens.');
 
-    // 2. Carrega o modelo ONNX com streaming de progresso
-    atualizarStatus('Baixando Modelo Macro LLM (~53 MB)...', 'loading');
-
-    // Configura threads para o WebAssembly
-    if (window.ort && ort.env && ort.env.wasm) {
-      ort.env.wasm.numThreads = Math.min(4, navigator.hardwareConcurrency || 2);
+    // 2. Garante configuração estrita single-thread do WASM
+    if (typeof ort !== 'undefined' && ort.env && ort.env.wasm) {
+      ort.env.wasm.numThreads = 1;
+      ort.env.wasm.proxy = false;
     }
 
-    const modelBuffer = await fetchModelWithProgress(state.modelUrl, (pct, loaded, total) => {
+    // 3. Carrega o modelo ONNX com streaming de progresso e descarte de buffers
+    atualizarStatus('Baixando Modelo Macro LLM (~53 MB)...', 'loading');
+
+    let modelBuffer = await fetchModelWithProgress(state.modelUrl, (pct, loaded, total) => {
       dom.progressBar.style.width = `${pct}%`;
       dom.progressPercent.textContent = `${pct}%`;
       const loadedMb = (loaded / (1024 * 1024)).toFixed(1);
@@ -209,13 +249,17 @@ async function initModelAndTokenizer() {
       dom.progressDetails.textContent = `${loadedMb} MB / ${totalMb} MB transferidos`;
     });
 
-    atualizarStatus('Compilando WebAssembly e carregando pesos na memória...', 'loading');
-    dom.progressDetails.textContent = 'Inicializando sessão no runtime WASM...';
+    atualizarStatus('Compilando WebAssembly (Single-Thread)...', 'loading');
+    dom.progressDetails.textContent = 'Alocando runtime WebAssembly de baixa memória...';
 
+    // Cria a sessão com provedor WASM single-thread
     state.session = await ort.InferenceSession.create(modelBuffer, {
       executionProviders: ['wasm'],
       graphOptimizationLevel: 'all',
     });
+
+    // Libera imediatamente a referência ao ArrayBuffer de 53 MB no JS Heap
+    modelBuffer = null;
 
     state.isModelReady = true;
     state.isModelLoading = false;
@@ -226,17 +270,23 @@ async function initModelAndTokenizer() {
     dom.btnGerar.disabled = false;
     dom.btnGerar.classList.remove('opacity-50', 'cursor-not-allowed');
 
-    console.log('[ONNX Runtime] Sessão criada com sucesso!');
+    console.log('[ONNX Runtime] Sessão criada com sucesso (WASM Single-Thread)!');
   } catch (error) {
     console.error('[Erro na Inicialização]', error);
-    atualizarStatus(`Erro no carregamento: ${error.message}`, 'error');
-    dom.progressDetails.textContent = 'Falha ao baixar ou inicializar o modelo WebAssembly.';
+    let msgAmigavel = `Falha na inicialização do WebAssembly: ${error.message}`;
+    if (error.message && (error.message.includes('61696') || error.message.includes('out of memory') || error.message.includes('OOM'))) {
+      msgAmigavel = 'O navegador atingiu o limite de memória para WebAssembly. Tente fechar outras abas e recarregar a página.';
+    }
+    atualizarStatus('Erro ao carregar modelo', 'error');
+    dom.progressDetails.textContent = msgAmigavel;
+    exibirAlertaErro(msgAmigavel);
     state.isModelLoading = false;
   }
 }
 
 /**
- * Faz download do arquivo .onnx monitorando o progresso da requisição HTTP.
+ * Faz download do arquivo .onnx com monitoramento de progresso e
+ * descarte progressivo dos chunks para minimizar a pressão de memória.
  */
 async function fetchModelWithProgress(url, onProgress) {
   const response = await fetch(url);
@@ -255,23 +305,31 @@ async function fetchModelWithProgress(url, onProgress) {
 
   const reader = response.body.getReader();
   let loaded = 0;
-  const chunks = [];
+  let chunks = [];
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    loaded += value.length;
-    const pct = Math.min(100, Math.round((loaded / total) * 100));
-    onProgress(pct, loaded, total);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.length;
+      const pct = Math.min(100, Math.round((loaded / total) * 100));
+      onProgress(pct, loaded, total);
+    }
+  } catch (streamErr) {
+    chunks = null;
+    throw streamErr;
   }
 
+  // Concatenação em buffer único contíguo liberando cada chunk progressivamente
   const completeBuffer = new Uint8Array(loaded);
   let offset = 0;
-  for (const chunk of chunks) {
+  while (chunks.length > 0) {
+    const chunk = chunks.shift();
     completeBuffer.set(chunk, offset);
     offset += chunk.length;
   }
+  chunks = null; // Anula explicitamente o array de chunks do heap do V8
 
   return completeBuffer.buffer;
 }
@@ -328,10 +386,11 @@ function truncarSemanticamente(textoContinuacao) {
 }
 
 /**
- * Inicia o loop autorregressivo de geração de texto em streaming.
+ * Inicia o loop autorregressivo de geração de texto em streaming com alívio de memória.
  */
 async function iniciarGeracao() {
   if (!state.isModelReady || state.isGenerating) return;
+  ocultarAlertaErro();
 
   const textoEntrada = dom.inputPrompt.value.trim();
   if (!textoEntrada) {
@@ -408,6 +467,14 @@ async function iniciarGeracao() {
       const logitsData = resultado.logits.data; // Float32Array(4096)
       const logits = new Float32Array(logitsData);
 
+      // Descarte explícito de referências internas do runtime WASM
+      if (typeof resultado.logits.dispose === 'function') {
+        resultado.logits.dispose();
+      }
+      if (typeof tensorInput.dispose === 'function') {
+        tensorInput.dispose();
+      }
+
       // 1. Penalidade de Repetição em janela móvel de 64 tokens recentes
       const janelaRecente = tokensHistorico.slice(-64);
       const uniqueRecente = new Set(janelaRecente);
@@ -462,7 +529,7 @@ async function iniciarGeracao() {
         break;
       }
 
-      // Pausa microscópica para o navegador pintar o streaming
+      // Pausa essencial: libera a thread principal para renderizar e ativa o Garbage Collector do V8
       await new Promise((r) => setTimeout(r, 0));
     }
 
@@ -476,7 +543,12 @@ async function iniciarGeracao() {
     }
   } catch (err) {
     console.error('[Erro na geração]', err);
-    dom.outputStreaming.textContent += `\n[Erro durante a inferência: ${err.message}]`;
+    let msgErro = err.message || 'Erro desconhecido';
+    if (msgErro.includes('61696') || msgErro.includes('out of memory') || msgErro.includes('OOM') || msgErro.includes('unreachable')) {
+      msgErro = 'O navegador atingiu o limite de memória WebAssembly (OOM). Sugestão: feche abas pesadas e tente gerar menos tokens.';
+    }
+    dom.outputStreaming.textContent += `\n\n[⚠️ ${msgErro}]`;
+    exibirAlertaErro(msgErro);
   } finally {
     finalizarGeracao(inicioTempo, tokensGeradosCount);
   }
